@@ -51,7 +51,7 @@
   }
 
   *{box-sizing:border-box;margin:0;padding:0;}
-  html{background:var(--bg);scroll-behavior:smooth;overflow-x:hidden;width:100%;}
+  html{background:var(--bg);overflow-x:hidden;width:100%;scroll-padding-top:100px;}
   body{
     background:var(--bg);
     color:var(--fg);
@@ -283,6 +283,10 @@
   .hero-grid > .hero-media.hero-enter{transition-delay:.52s;}
 
   .hero-media{position:relative;width:100%;max-width:1120px;margin:0 auto;}
+  @media (min-width:901px){
+    .hero{padding-top:calc(100px + 5vw);}
+    .hero-grid{gap:clamp(20px,2.6vw,32px);}
+  }
   .hero-media::before{
     content:'';position:absolute;z-index:0;pointer-events:none;
     inset:-10%;
@@ -313,6 +317,14 @@
     color:#f2ede2;background:rgba(8,8,9,.35);
   }
   .hero-reel .play svg{width:11px;height:11px;}
+
+  .hero-reel::after{
+    content:'';position:absolute;inset:0;z-index:2;pointer-events:none;
+    background:radial-gradient(420px circle at var(--mx,50%) var(--my,50%), rgba(255,255,255,.08), transparent 62%);
+    opacity:0;transition:opacity .5s ease;
+  }
+  .hero-media.tilt-active .hero-reel::after{opacity:1;}
+  .hero-media{transition:transform .5s cubic-bezier(.16,1,.3,1);transform-style:preserve-3d;}
 
   .hero-strip{
     width:100vw;margin-left:calc(50% - 50vw);margin-top:0;
@@ -1293,11 +1305,81 @@
     setTimeout(clear, 2600); // hard ceiling so a slow network never traps the visitor
   })();
 
-  // ---- header scroll state ----
+  // ---- premium virtual scroll (desktop/mouse only) ----
+  // A single eased loop drives both wheel-scrolling and in-page anchor jumps, so the whole
+  // page has one consistent "glide" feel instead of native step-scroll. Touch devices are
+  // completely untouched — no listener attached, no risk to mobile feel or performance.
   const headerEl = document.getElementById('siteHeader');
-  window.addEventListener('scroll', ()=>{
-    headerEl.classList.toggle('scrolled', window.scrollY > 8);
-  });
+  const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const isDesktopPointer = window.matchMedia('(hover: hover) and (pointer: fine)').matches;
+
+  function updateHeaderState(y){
+    headerEl.classList.toggle('scrolled', y > 8);
+  }
+
+  if(isDesktopPointer && !prefersReduced){
+    let targetY = window.scrollY;
+    let currentY = window.scrollY;
+    let rafId = null;
+    let internalWrite = false;
+
+    function maxScroll(){ return document.documentElement.scrollHeight - window.innerHeight; }
+
+    function tick(){
+      currentY += (targetY - currentY) * 0.115;
+      if(Math.abs(targetY - currentY) < 0.4) currentY = targetY;
+      internalWrite = true;
+      window.scrollTo(0, currentY);
+      updateHeaderState(currentY);
+      internalWrite = false;
+      if(currentY !== targetY){
+        rafId = requestAnimationFrame(tick);
+      } else {
+        rafId = null;
+      }
+    }
+    function kick(){ if(rafId === null) rafId = requestAnimationFrame(tick); }
+
+    window.addEventListener('wheel', (e)=>{
+      e.preventDefault();
+      targetY = Math.min(Math.max(targetY + e.deltaY, 0), maxScroll());
+      kick();
+    }, {passive:false});
+
+    // keyboard scrolling (space/PageDown/arrows) and scrollbar dragging bypass the wheel
+    // listener, so resync target/current whenever a scroll happens that we didn't drive ourselves
+    window.addEventListener('scroll', ()=>{
+      if(!internalWrite && rafId === null){ targetY = window.scrollY; currentY = window.scrollY; }
+    }, {passive:true});
+
+    window.addEventListener('resize', ()=>{ targetY = Math.min(targetY, maxScroll()); });
+
+    // in-page anchor links glide through the same eased target instead of jumping natively
+    document.querySelectorAll('a[href^="#"]').forEach(link=>{
+      const id = link.getAttribute('href');
+      if(id.length > 1){
+        link.addEventListener('click', (e)=>{
+          const target = document.querySelector(id);
+          if(target){
+            e.preventDefault();
+            const headerOffset = headerEl.offsetHeight + 28;
+            targetY = Math.min(Math.max(target.getBoundingClientRect().top + window.scrollY - headerOffset, 0), maxScroll());
+            kick();
+            history.pushState(null, '', id);
+          }
+        });
+      }
+    });
+  } else {
+    // touch / reduced-motion: native scroll stays completely untouched, just keep header + anchor offset in sync
+    let headerTicking = false;
+    window.addEventListener('scroll', ()=>{
+      if(!headerTicking){
+        requestAnimationFrame(()=>{ updateHeaderState(window.scrollY); headerTicking = false; });
+        headerTicking = true;
+      }
+    }, {passive:true});
+  }
 
   // ---- mobile nav ----
   const menuBtn = document.getElementById('menuBtn');
@@ -1396,6 +1478,29 @@
       if(!heroTicking){ requestAnimationFrame(updateHeroParallax); heroTicking = true; }
     }, {passive:true});
     updateHeroParallax();
+  }
+
+  // ---- hero media: subtle cursor tilt + sheen (desktop hover only, very restrained) ----
+  if(!window.matchMedia('(prefers-reduced-motion: reduce)').matches && window.matchMedia('(hover: hover)').matches){
+    const heroMediaTilt = document.querySelector('.hero-media');
+    const heroReelTilt = document.getElementById('heroReel');
+    if(heroMediaTilt && heroReelTilt){
+      heroMediaTilt.addEventListener('mousemove', (e)=>{
+        const rect = heroMediaTilt.getBoundingClientRect();
+        const px = (e.clientX - rect.left) / rect.width;
+        const py = (e.clientY - rect.top) / rect.height;
+        const rotateY = (px - .5) * 3.2;   // max ~1.6deg either side
+        const rotateX = (py - .5) * -3.2;
+        heroMediaTilt.style.transform = `perspective(1400px) rotateX(${rotateX}deg) rotateY(${rotateY}deg)`;
+        heroReelTilt.style.setProperty('--mx', (px * 100) + '%');
+        heroReelTilt.style.setProperty('--my', (py * 100) + '%');
+        heroMediaTilt.classList.add('tilt-active');
+      });
+      heroMediaTilt.addEventListener('mouseleave', ()=>{
+        heroMediaTilt.style.transform = '';
+        heroMediaTilt.classList.remove('tilt-active');
+      });
+    }
   }
 
   // ---- lazy-load + autoplay tile videos on view ----
